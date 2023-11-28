@@ -69,7 +69,9 @@ BPFTargetLowering::BPFTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::BRIND, MVT::Other, Expand);
   setOperationAction(ISD::BRCOND, MVT::Other, Expand);
 
-  setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
+  setOperationAction({ISD::GlobalAddress, ISD::BlockAddress, ISD::ConstantPool,
+                      ISD::JumpTable},
+                     MVT::i64, Custom);
 
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64, Custom);
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
@@ -305,6 +307,12 @@ SDValue BPFTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
     return LowerBR_CC(Op, DAG);
   case ISD::GlobalAddress:
     return LowerGlobalAddress(Op, DAG);
+  case ISD::BlockAddress:
+    return LowerBlockAddress(Op, DAG);
+  case ISD::ConstantPool:
+    return LowerConstantPool(Op, DAG);
+  case ISD::JumpTable:
+    return LowerJumpTable(Op, DAG);
   case ISD::SELECT_CC:
     return LowerSELECT_CC(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC:
@@ -670,18 +678,65 @@ const char *BPFTargetLowering::getTargetNodeName(unsigned Opcode) const {
   return nullptr;
 }
 
+static SDValue getTargetNode(GlobalAddressSDNode *N, const SDLoc &DL, EVT Ty,
+                             SelectionDAG &DAG, unsigned Flags) {
+  return DAG.getTargetGlobalAddress(N->getGlobal(), DL, Ty, 0, Flags);
+}
+
+static SDValue getTargetNode(BlockAddressSDNode *N, const SDLoc &DL, EVT Ty,
+                             SelectionDAG &DAG, unsigned Flags) {
+  return DAG.getTargetBlockAddress(N->getBlockAddress(), Ty, N->getOffset(),
+                                   Flags);
+}
+
+static SDValue getTargetNode(ConstantPoolSDNode *N, const SDLoc &DL, EVT Ty,
+                             SelectionDAG &DAG, unsigned Flags) {
+  return DAG.getTargetConstantPool(N->getConstVal(), Ty, N->getAlign(),
+                                   N->getOffset(), Flags);
+}
+
+static SDValue getTargetNode(JumpTableSDNode *N, const SDLoc &DL, EVT Ty,
+                             SelectionDAG &DAG, unsigned Flags) {
+  return DAG.getTargetJumpTable(N->getIndex(), Ty, Flags);
+}
+
+template <class NodeTy>
+SDValue BPFTargetLowering::getAddr(NodeTy *N, SelectionDAG &DAG,
+                                   unsigned Flags) const {
+  SDLoc DL(N);
+
+  SDValue GA = getTargetNode(N, DL, MVT::i64, DAG, Flags);
+
+  return DAG.getNode(BPFISD::Wrapper, DL, MVT::i64, GA);
+}
+
 SDValue BPFTargetLowering::LowerGlobalAddress(SDValue Op,
                                               SelectionDAG &DAG) const {
-  auto *N = cast<GlobalAddressSDNode>(Op);
+  GlobalAddressSDNode *N = cast<GlobalAddressSDNode>(Op);
   if (N->getOffset() != 0)
     report_fatal_error("invalid offset for global address: " +
                        Twine(N->getOffset()));
+  return getAddr(N, DAG);
+}
 
-  SDLoc DL(Op);
-  const GlobalValue *GV = N->getGlobal();
-  SDValue GA = DAG.getTargetGlobalAddress(GV, DL, MVT::i64);
+SDValue BPFTargetLowering::LowerBlockAddress(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  BlockAddressSDNode *N = cast<BlockAddressSDNode>(Op);
 
-  return DAG.getNode(BPFISD::Wrapper, DL, MVT::i64, GA);
+  return getAddr(N, DAG);
+}
+
+SDValue BPFTargetLowering::LowerConstantPool(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  ConstantPoolSDNode *N = cast<ConstantPoolSDNode>(Op);
+
+  return getAddr(N, DAG);
+}
+
+SDValue BPFTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
+  JumpTableSDNode *N = cast<JumpTableSDNode>(Op);
+
+  return getAddr(N, DAG);
 }
 
 unsigned
